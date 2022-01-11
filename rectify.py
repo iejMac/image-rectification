@@ -34,9 +34,10 @@ def rectify(img_path):
   img = cv2.imread(img_path)
   img_shape = img.shape
 
+  cv2.imshow("test", img)
+  cv2.setMouseCallback("test", get_point)
+
   while len(lines) < 8:
-    cv2.imshow("test", img)
-    cv2.setMouseCallback("test", get_point)
     key = cv2.waitKey(20)
     if key == ord('q'):
       quit()
