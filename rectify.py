@@ -3,13 +3,16 @@ import sys
 import math
 import numpy as np
 
+from scipy.linalg import null_space
+from numpy.linalg import cholesky, inv, svd
+
 # TEMP GLOBALS:
-lines = []
+points = []
 
 def get_point(event, x, y, flags, params):
-  global lines
+  global points
   if event == cv2.EVENT_LBUTTONDOWN:
-    lines.append([x, y, 1])
+    points.append([x, y, 1])
     print(x, y)
 
 def perspective_warp(image, transform):
@@ -29,7 +32,7 @@ def perspective_warp(image, transform):
 	return cv2.warpPerspective(image, corrected_transform, (math.ceil(xmax - xmin), math.ceil(ymax - ymin))), x_adj, y_adj
 
 def rectify(img_path):
-  global lines
+  global points
 
   img = cv2.imread(img_path)
   img_shape = img.shape
@@ -37,15 +40,23 @@ def rectify(img_path):
   cv2.imshow("test", img)
   cv2.setMouseCallback("test", get_point)
 
-  while len(lines) < 8:
+  while len(points) < 16:
+    if len(points) % 2 == 0 and len(points) != 0: 
+      if len(points) < 9:
+        cv2.line(img, tuple(points[-1][:2]), tuple(points[-2][:2]), (255, 0, 0), 2)
+      else:
+        cv2.line(img, tuple(points[-1][:2]), tuple(points[-2][:2]), (0, 0, 255), 2)
+      cv2.imshow("test", img)
+    
     key = cv2.waitKey(20)
     if key == ord('q'):
       quit()
 
-  l1 = np.cross(lines[0], lines[1])
-  l2 = np.cross(lines[2], lines[3])
-  m1 = np.cross(lines[4], lines[5])
-  m2 = np.cross(lines[6], lines[7])
+  # Affine rectification:
+  l1 = np.cross(points[0], points[1])
+  l2 = np.cross(points[2], points[3])
+  m1 = np.cross(points[4], points[5])
+  m2 = np.cross(points[6], points[7])
 
   p1 = np.cross(l1, l2)
   p2 = np.cross(m1, m2)
@@ -57,10 +68,36 @@ def rectify(img_path):
   img_l_inf /= np.linalg.norm(img_l_inf)
   img_l_inf /= img_l_inf[2]
 
-  H = np.eye(3)
-  H[2] = img_l_inf 
+  H1 = np.eye(3)
+  H1[2] = img_l_inf 
 
-  dst, _, _ = perspective_warp(img, H)
+  # Metric rectification:
+  l1 = np.cross(points[8], points[9])
+  m1 = np.cross(points[10], points[11])
+  l2 = np.cross(points[12], points[13])
+  m2 = np.cross(points[14], points[15])
+
+  eq = np.zeros((2, 3))
+  eq[0] = np.array([l1[0] * m1[0], l1[0]*m1[1] + l1[1]*m1[0], l1[1]*m1[1]])
+  eq[1] = np.array([l2[0] * m2[0], l2[0]*m2[1] + l2[1]*m2[0], l2[1]*m2[1]])
+
+  S = null_space(eq).T[0]
+  S = np.append(S, 1.0).reshape((2, 2))
+  
+  U, D, V = svd(S)
+
+  A = U * np.sqrt(D) * U.T
+  K = cholesky(S)
+
+  H2 = np.zeros((3, 3))
+  H2[0:2, 0:2] = A
+  H2[2][2] = 1.0
+
+  H2_inv = inv(H2)
+
+  img = cv2.imread(img_path)
+  dst, _, _ = perspective_warp(img, H1)
+  dst, _, _ = perspective_warp(dst, H2_inv)
 
   cv2.imshow("test", dst)
 
