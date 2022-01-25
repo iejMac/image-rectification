@@ -13,7 +13,17 @@ def get_point(event, x, y, flags, params):
   global points
   if event == cv2.EVENT_LBUTTONDOWN:
     points.append([x, y, 1])
-    print(x, y)
+
+def get_points(img, threshold, color):
+  global points
+  cur_len = len(points)
+  while len(points) < threshold:
+    if len(points) % 2 == 0 and len(points) != cur_len: 
+      cv2.line(img, tuple(points[-1][:2]), tuple(points[-2][:2]), color, 2)
+      cv2.imshow("img", img)
+    key = cv2.waitKey(20)
+    if key == ord('q'):
+      quit()
 
 def perspective_warp(image, transform):
 	h, w = image.shape[:2]
@@ -31,28 +41,8 @@ def perspective_warp(image, transform):
 	corrected_transform = np.matmul(translate, transform)
 	return cv2.warpPerspective(image, corrected_transform, (math.ceil(xmax - xmin), math.ceil(ymax - ymin))), x_adj, y_adj
 
-def rectify(img_path):
-  global points
 
-  img = cv2.imread(img_path)
-  img_shape = img.shape
-
-  cv2.imshow("test", img)
-  cv2.setMouseCallback("test", get_point)
-
-  while len(points) < 16:
-    if len(points) % 2 == 0 and len(points) != 0: 
-      if len(points) < 9:
-        cv2.line(img, tuple(points[-1][:2]), tuple(points[-2][:2]), (255, 0, 0), 2)
-      else:
-        cv2.line(img, tuple(points[-1][:2]), tuple(points[-2][:2]), (0, 0, 255), 2)
-      cv2.imshow("test", img)
-    
-    key = cv2.waitKey(20)
-    if key == ord('q'):
-      quit()
-
-  # Affine rectification:
+def rectifyAffine(points):
   l1 = np.cross(points[0], points[1])
   l2 = np.cross(points[2], points[3])
   m1 = np.cross(points[4], points[5])
@@ -71,41 +61,83 @@ def rectify(img_path):
   H1 = np.eye(3)
   H1[2] = img_l_inf 
 
-  # Metric rectification:
-  l1 = np.cross(points[8], points[9])
-  m1 = np.cross(points[10], points[11])
-  l2 = np.cross(points[12], points[13])
-  m2 = np.cross(points[14], points[15])
+  return H1
 
-  eq = np.zeros((2, 3))
-  eq[0] = np.array([l1[0] * m1[0], l1[0]*m1[1] + l1[1]*m1[0], l1[1]*m1[1]])
-  eq[1] = np.array([l2[0] * m2[0], l2[0]*m2[1] + l2[1]*m2[0], l2[1]*m2[1]])
+def rectifyMetric(points):
+  l1 = np.cross(points[0], points[1])
+  m1 = np.cross(points[2], points[3])
+  l2 = np.cross(points[4], points[5])
+  m2 = np.cross(points[6], points[7])
 
-  S = null_space(eq).T[0]
-  S = np.append(S, 1.0).reshape((2, 2))
-  
-  U, D, V = svd(S)
+  RHS = np.zeros((2, 1))
+  A = np.zeros((2, 2))
 
-  A = U * np.sqrt(D) * U.T
-  K = cholesky(S)
+  RHS[0] = -l1[1] * m1[1]
+  RHS[1] = -l2[1] * m2[1]
+
+  A[0][0] = l1[0] * m1[0]
+  A[0][1] = l1[0] * m1[1] + l1[1] * m1[0]
+  A[1][0] = l2[0] * m2[0]
+  A[1][1] = l2[0] * m2[1] + l2[1] * m2[0]
+
+  s = np.linalg.lstsq(A, RHS)[0]
+  S = np.array([[s[0][0], s[1][0]],[s[1][0],1]])
+
+  u, s, vh = svd(S, full_matrices=1, compute_uv=1)
+  A = np.linalg.cholesky(S)
 
   H2 = np.zeros((3, 3))
-  H2[0:2, 0:2] = A
-  H2[2][2] = 1.0
+  H2[:2, :2] = A
+  H2[2, 2] = 1
 
-  H2_inv = inv(H2)
+  H2_inv = np.linalg.inv(H2)
+
+  return H2_inv
+
+def rectify(img_path, pre_points):
+  global points
+  points += pre_loaded_points
 
   img = cv2.imread(img_path)
-  dst, _, _ = perspective_warp(img, H1)
-  dst, _, _ = perspective_warp(dst, H2_inv)
+  img_clean = np.copy(img)
+  img_shape = img.shape
 
-  cv2.imshow("test", dst)
+  cv2.imshow("img", img)
+  cv2.setMouseCallback("img", get_point)
 
+  print("Affine Rectification:")
+  print("Highlight 2 pairs of parallel lines")
+  get_points(img, 8, (255, 0, 0))
+  H_af = rectifyAffine(points)
+
+  # Affinely rectified
+  img, _, _ = perspective_warp(img_clean, H_af)
+  img_clean = np.copy(img)
+
+  cv2.imshow("img", img_clean)
+
+  print("Metric Rectification:")
+  print("Highlight 2 pairs of orthogonal lines")
+  get_points(img, 16, (0, 0, 255))
+  H_me = rectifyMetric(points[8:])
+
+  # Metrically rectified:
+  img, _, _ = perspective_warp(img_clean, H_me)
+
+  cv2.imshow("img", img)
 
   key = cv2.waitKey(0)
   cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-  if len(sys.argv) != 2:
+  pre_loaded_points = []
+  if len(sys.argv) == 2:
+    pass
+  elif len(sys.argv) == 3:
+    point_path = sys.argv[2]
+    pre_points = np.genfromtxt(point_path, delimiter=",").astype(int)
+    pre_loaded_points = [[p[0], p[1], p[2]] for p in pre_points]
+  else:
     print("Usage: python rectify.py image_path")
-  rectify(sys.argv[1])
+  path = sys.argv[1] 
+  rectify(path, pre_loaded_points)
